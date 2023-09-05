@@ -3,18 +3,13 @@ import sys
 sys.path.append('/home/gpuvmadm/PyTomography/src')
 import numpy as np
 import os
-import pickle
-import copy
-import matplotlib.pyplot as plt
 from pytomography.transforms import SPECTAttenuationTransform, SPECTPSFTransform
-from pytomography.metadata import PSFMeta
-from pytomography.projections import SPECTSystemMatrix
+from pytomography.projectors import SPECTSystemMatrix
 from pytomography.io.SPECT import simind
 from pytomography.algorithms import OSEMBSR
-from pytomography.priors import RelativeDifferencePrior, TopNAnatomyNeighbourWeight
-from misc import get_organ_masks, get_organ_volume, get_photopeak_scatter, get_activities_pct, get_psf_meta, SaveData, SaveDataDiscrete
+from pytomography.priors import RelativeDifferencePrior, TopNAnatomyNeighbourWeight, AnatomyNeighbourWeight
+from misc import get_organ_masks, get_organ_volume, get_photopeak_scatter, get_activities_pct, get_psf_meta, SaveData
 import torch
-import pytomography
 import time
 
 def reconstruct_phantom(organ_specifications_path, organ_concentrations_path, organ_concentrations_index, recon_type, scatter_type, organ_segmentation_type, projection_time, CPSperMBq, n_iters, save_path, masks=None, mask_volumes=None, prior_type=None, save_recon_object=False):
@@ -35,7 +30,7 @@ def reconstruct_phantom(organ_specifications_path, organ_concentrations_path, or
         
     # Open MetaData
     activities_true =  np.genfromtxt(organ_concentrations_path, delimiter=',').T[organ_concentrations_index+1]
-    object_meta, image_meta, photopeak, scatter_TEW = get_photopeak_scatter(organ_specifications_path, organ_concentrations_path, organ_concentrations_index, dT, headerfile_peak='photopeak.h00', headerfile_lower='lowerscatter.h00', headerfile_upper='upperscatter.h00')
+    object_meta, proj_meta, photopeak, scatter_TEW = get_photopeak_scatter(organ_specifications_path, organ_concentrations_path, organ_concentrations_index, dT, headerfile_peak='photopeak.h00', headerfile_lower='lowerscatter.h00', headerfile_upper='upperscatter.h00')
     _, _, primary, _ = get_photopeak_scatter(organ_specifications_path, organ_concentrations_path, organ_concentrations_index, dT, headerfile_peak='primary.h00', headerfile_lower='lowerscatter.h00', headerfile_upper='upperscatter.h00')
     
     if scatter_type=='TEW':
@@ -65,17 +60,20 @@ def reconstruct_phantom(organ_specifications_path, organ_concentrations_path, or
     elif prior_type==2:
         prior_weight = TopNAnatomyNeighbourWeight(CT, 8)
         prior = RelativeDifferencePrior(beta=0.3, gamma=2, weight=prior_weight)
+    elif prior_type==3:
+        prior_weight = AnatomyNeighbourWeight(CT, lambda CT, CT_n: 1/(1+1e4*(CT-CT_n)**2))
+        prior = RelativeDifferencePrior(beta=0.3, gamma=2, weight=prior_weight)
     
     if recon_type=='regular':
         system_matrix = SPECTSystemMatrix(
             obj2obj_transforms = [att_transform,psf_transform],
-            im2im_transforms = [],
+            proj2proj_transforms = [],
             object_meta = object_meta,
-            image_meta = image_meta,
+            proj_meta = proj_meta,
             n_parallel=15)
         callback  = SaveData(calibration_factor, n_subset_save=7, masks=masks)
         reconstruction_algorithm = OSEMBSR(
-            image = photopeak,
+            projections = photopeak,
             system_matrix = system_matrix,
             scatter = scatter,
             prior=prior)

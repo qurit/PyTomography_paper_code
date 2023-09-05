@@ -1,3 +1,5 @@
 *.png
 *.out
 __pycache__
+*.pdf
+*.jpg

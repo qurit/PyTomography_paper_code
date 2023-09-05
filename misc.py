@@ -35,11 +35,12 @@ def get_photopeak_scatter(organ_specifications_path, organ_concentrations_path, 
         headerfile_peak_path = os.path.join(projection_folder, headerfile_peak)
         headerfile_lower_path = os.path.join(projection_folder, headerfile_lower)
         headerfile_upper_path = os.path.join(projection_folder, headerfile_upper)
-        object_meta, image_meta, photopeak_i = simind.get_projections(headerfile_peak_path)
+        object_meta, proj_meta = simind.get_metadata(headerfile_peak_path)
+        photopeak_i = simind.get_projections(headerfile_peak_path)
         scatter_i = simind.get_scatter_from_TEW(headerfile_peak_path, headerfile_lower_path, headerfile_upper_path)
         photopeak += photopeak_i * concentration * organ_volume * dT # (counts/s/MBq)*(MBq/mL)*mL*s = counts
         scatter += scatter_i * concentration * organ_volume *  dT
-    return object_meta, image_meta, photopeak, scatter
+    return object_meta, proj_meta, photopeak, scatter
 
 def get_organ_masks(organ_specifications_path, object_meta, GT_dtype=np.float32, scale=True, full_voxel=False, index=None):
     # Get required info
@@ -83,10 +84,9 @@ class SaveDataDiscrete(CallBack):
         self.calibration_factor = calibration_factor
         self.activities = []
         self.n_subset_save = n_subset_save
-    def run(self, activities, n_iter, n_subset):
-        if n_subset==self.n_subset_save:
-            activities_cal = activities[0] *self.calibration_factor
-            self.activities.append(activities_cal.cpu().numpy())
+    def run(self, activities, n_iter):
+        activities_cal = activities[0] *self.calibration_factor
+        self.activities.append(activities_cal.cpu().numpy())
             
 class SaveData(CallBack):
     def __init__(self, calibration_factor, masks, device = None, n_subset_save=0):
@@ -112,11 +112,10 @@ class SaveData(CallBack):
         activities_noise_list.append(np.array(activity_noise))
         activities_list.append(activities_cal.cpu().numpy())
         
-    def run(self, object, n_iter, n_subset):
-        if n_subset==self.n_subset_save:
-            self.append_activities(object, self.masks, self.norm_constant, self.activities, self.activities_noise)
-            # Only for voxels 100% in the organ
-            self.append_activities(object, self.masks_organonly, self.norm_constant_organonly, self.activities_organonly, self.activities_noise_organonly)
+    def run(self, object, n_iter):
+        self.append_activities(object, self.masks, self.norm_constant, self.activities, self.activities_noise)
+        # Only for voxels 100% in the organ
+        self.append_activities(object, self.masks_organonly, self.norm_constant_organonly, self.activities_organonly, self.activities_noise_organonly)
             
 class SaveDataMaskCutoff(CallBack):
     def __init__(self, calibration_factor, masks, device = None, n_subset_save=0):
@@ -128,11 +127,10 @@ class SaveDataMaskCutoff(CallBack):
         self.activities = []
         self.n_subset_save = n_subset_save
         
-    def run(self, object, n_iter, n_subset):
-        if n_subset==self.n_subset_save:
-            activities = (object.unsqueeze(dim=1) * self.masks).sum(axis=(-1,-2,-3))/ self.norm_constant
-            activities_cal = activities[0] *self.calibration_factor
-            self.activities.append(activities_cal.cpu().numpy())
+    def run(self, object, n_iter):
+        activities = (object.unsqueeze(dim=1) * self.masks).sum(axis=(-1,-2,-3))/ self.norm_constant
+        activities_cal = activities[0] *self.calibration_factor
+        self.activities.append(activities_cal.cpu().numpy())
             
 class SaveDataScaleUp(CallBack):
     def __init__(self, calibration_factor, masks, device = None, n_subset_save=0):
@@ -143,12 +141,11 @@ class SaveDataScaleUp(CallBack):
         self.activities = []
         self.n_subset_save = n_subset_save
         self.resizer = Resize((512,512,768))
-    def run(self, object, n_iter, n_subset):
-        if n_subset==self.n_subset_save:
-            object = self.resizer(object)
-            activities = torch.tensor([(object * mask).sum(axis=(-1,-2,-3))/NC for mask, NC in zip(self.masks, self.norm_constant)])
-            # Prevents GPU OOM
-            #activities = (object.unsqueeze(dim=1) * self.masks).sum(axis=(-1,-2,-3))/ self.norm_constant
-            activities_cal = activities * self.calibration_factor
-            self.activities.append(activities_cal.numpy())
+    def run(self, object, n_iter):
+        object = self.resizer(object)
+        activities = torch.tensor([(object * mask).sum(axis=(-1,-2,-3))/NC for mask, NC in zip(self.masks, self.norm_constant)])
+        # Prevents GPU OOM
+        #activities = (object.unsqueeze(dim=1) * self.masks).sum(axis=(-1,-2,-3))/ self.norm_constant
+        activities_cal = activities * self.calibration_factor
+        self.activities.append(activities_cal.numpy())
         
