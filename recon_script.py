@@ -3,17 +3,20 @@ import sys
 sys.path.append('/home/gpuvmadm/PyTomography/src')
 import numpy as np
 import os
-from pytomography.transforms import SPECTAttenuationTransform, SPECTPSFTransform
+from pytomography.transforms import SPECTAttenuationTransform, SPECTPSFTransform, KEMTransform
 from pytomography.projectors import SPECTSystemMatrix
 from pytomography.io.SPECT import simind
-from pytomography.algorithms import OSEMBSR
+from pytomography.algorithms import BSREM, OSEM, KEM
 from pytomography.priors import RelativeDifferencePrior, TopNAnatomyNeighbourWeight, AnatomyNeighbourWeight
 from misc import get_organ_masks, get_organ_volume, get_photopeak_scatter, get_activities_pct, get_psf_meta, SaveData
 import torch
 import time
 
-def reconstruct_phantom(organ_specifications_path, organ_concentrations_path, organ_concentrations_index, recon_type, scatter_type, organ_segmentation_type, projection_time, CPSperMBq, n_iters, save_path, masks=None, mask_volumes=None, prior_type=None, save_recon_object=False):
+def reconstruct_phantom(organ_specifications_path, organ_concentrations_path, organ_concentrations_index, scatter_type, projection_time, CPSperMBq, n_iters, save_path, algorithm, algorithm_kwargs, masks=None, mask_volumes=None, save_recon_object=False, activities_true=None, random_seed=None):
     
+    if random_seed is not None:
+        torch.manual_seed(random_seed)
+        
     if projection_time==np.inf:
         dT = 10
     else:
@@ -29,7 +32,8 @@ def reconstruct_phantom(organ_specifications_path, organ_concentrations_path, or
         mask_volumes = np.vectorize(get_organ_volume)(GT_paths, GT_dx*GT_dy*GT_dz)
         
     # Open MetaData
-    activities_true =  np.genfromtxt(organ_concentrations_path, delimiter=',').T[organ_concentrations_index+1]
+    if activities_true is None:
+        activities_true =  np.genfromtxt(organ_concentrations_path, delimiter=',').T[organ_concentrations_index+1]
     object_meta, proj_meta, photopeak, scatter_TEW = get_photopeak_scatter(organ_specifications_path, organ_concentrations_path, organ_concentrations_index, dT, headerfile_peak='photopeak.h00', headerfile_lower='lowerscatter.h00', headerfile_upper='upperscatter.h00')
     _, _, primary, _ = get_photopeak_scatter(organ_specifications_path, organ_concentrations_path, organ_concentrations_index, dT, headerfile_peak='primary.h00', headerfile_lower='lowerscatter.h00', headerfile_upper='upperscatter.h00')
     
@@ -46,40 +50,42 @@ def reconstruct_phantom(organ_specifications_path, organ_concentrations_path, or
     
     # Option to give masks as input argument to speed things up and not have to run this
     if masks is None:
-        masks = get_organ_masks(organ_specifications_path, object_meta, full_voxel=True)
+        masks = get_organ_masks(organ_specifications_path, object_meta, full_voxel=False)
     
-    CT = simind.get_atteuation_map(os.path.join('/disk1/EANM2023/mu208.hct'))[:,:,128:256]
-    att_transform = SPECTAttenuationTransform(CT)
+    attenuation_map = simind.get_attenuation_map(os.path.join('/disk1/EANM2023/mu208.hct'))[:,:,128:256]
+    att_transform = SPECTAttenuationTransform(attenuation_map)
     psf_meta = get_psf_meta(organ_specifications_path, 'photopeak.h00')
     psf_transform = SPECTPSFTransform(psf_meta)
     
-    if prior_type==0:
-        prior=None
-    elif prior_type==1:
-        prior = RelativeDifferencePrior(beta=0.3, gamma=2)
-    elif prior_type==2:
-        prior_weight = TopNAnatomyNeighbourWeight(CT, 8)
+    if algorithm==BSREM:
+        prior_weight = TopNAnatomyNeighbourWeight(attenuation_map, 8)
         prior = RelativeDifferencePrior(beta=0.3, gamma=2, weight=prior_weight)
-    elif prior_type==3:
-        prior_weight = AnatomyNeighbourWeight(CT, lambda CT, CT_n: 1/(1+1e4*(CT-CT_n)**2))
-        prior = RelativeDifferencePrior(beta=0.3, gamma=2, weight=prior_weight)
+        algorithm_kwargs['prior'] = prior
+        
+    if algorithm==KEM:
+        algorithm_kwargs['kem_transform'] = KEMTransform(
+        support_objects=[attenuation_map],
+        support_kernels_params=[[0.005]],
+        distance_kernel_params=[0.5],
+        kernel_on_gpu=True,
+        top_N = 40)
+        
+    system_matrix = SPECTSystemMatrix(
+        obj2obj_transforms = [att_transform,psf_transform],
+        proj2proj_transforms = [],
+        object_meta = object_meta,
+        proj_meta = proj_meta)
     
-    if recon_type=='regular':
-        system_matrix = SPECTSystemMatrix(
-            obj2obj_transforms = [att_transform,psf_transform],
-            proj2proj_transforms = [],
-            object_meta = object_meta,
-            proj_meta = proj_meta,
-            n_parallel=15)
-        callback  = SaveData(calibration_factor, n_subset_save=7, masks=masks)
-        reconstruction_algorithm = OSEMBSR(
-            projections = photopeak,
-            system_matrix = system_matrix,
-            scatter = scatter,
-            prior=prior)
-        start = time.time()
-        reconstructed_object = reconstruction_algorithm(n_iters=n_iters, n_subsets=8, callback=callback)
-        time_elapsed = time.time() - start
+    reconstruction_algorithm = algorithm(
+        projections = photopeak,
+        system_matrix = system_matrix,
+        scatter=scatter,
+        )
+    
+    callback  = SaveData(calibration_factor, n_subset_save=7, masks=masks)
+    start = time.time()
+    reconstructed_object = reconstruction_algorithm(n_iters=n_iters, n_subsets=8, callback=callback)
+    time_elapsed = time.time() - start
     
     # Save all data for easy reading
     activity_concs_true = activities_true

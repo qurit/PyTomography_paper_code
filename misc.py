@@ -6,7 +6,7 @@ from skimage.transform import resize
 from monai.transforms import Resize
 import pytomography
 from pytomography.io.SPECT import simind
-from pytomography.callbacks import CallBack
+from pytomography.callbacks import Callback
 import torch
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 pytomography.device = device
@@ -24,14 +24,14 @@ def get_psf_meta(organ_specifications_path, headerfile):
 def get_photopeak_scatter(organ_specifications_path, organ_concentrations_path, organ_concentrations_index, dT, headerfile_peak, headerfile_lower, headerfile_upper):
     
     # Get required info
-    _, _, GT_paths, projection_folders, regions = np.genfromtxt(organ_specifications_path, delimiter=',', skip_header=3, dtype=str).T
+    _, organ_names, GT_paths, projection_folders, regions = np.genfromtxt(organ_specifications_path, delimiter=',', skip_header=3, dtype=str).T
     GT_dz, GT_dy, GT_dx = np.genfromtxt(organ_specifications_path, delimiter=',', skip_header=1, max_rows=1).T
     organ_volumes = np.vectorize(get_organ_volume)(GT_paths, GT_dx*GT_dy*GT_dz)
     concentrations =  np.genfromtxt(organ_concentrations_path, delimiter=',').T[1+organ_concentrations_index]
     # Get projections
     photopeak = 0
     scatter = 0
-    for projection_folder, concentration, organ_volume in zip(projection_folders, concentrations, organ_volumes):
+    for organ_name, projection_folder, concentration, organ_volume in zip(organ_names, projection_folders, concentrations, organ_volumes):
         headerfile_peak_path = os.path.join(projection_folder, headerfile_peak)
         headerfile_lower_path = os.path.join(projection_folder, headerfile_lower)
         headerfile_upper_path = os.path.join(projection_folder, headerfile_upper)
@@ -42,7 +42,7 @@ def get_photopeak_scatter(organ_specifications_path, organ_concentrations_path, 
         scatter += scatter_i * concentration * organ_volume *  dT
     return object_meta, proj_meta, photopeak, scatter
 
-def get_organ_masks(organ_specifications_path, object_meta, GT_dtype=np.float32, scale=True, full_voxel=False, index=None):
+def get_organ_masks(organ_specifications_path, object_meta=None, GT_dtype=np.float32, scale=True, full_voxel=False, index=None):
     # Get required info
     _, _, GT_paths, _, regions = np.genfromtxt(organ_specifications_path, delimiter=',', skip_header=3, dtype=str).T
     regions = regions.astype(int)
@@ -61,9 +61,11 @@ def get_organ_masks(organ_specifications_path, object_meta, GT_dtype=np.float32,
         GTi = np.transpose(GTi, GT_ordering)
         GTi = (GTi>0).astype(np.float32)
         if scale:
-            GTi = resize(GTi, object_meta.shape, anti_aliasing=True)
+            GTi = resize(GTi, object_meta.shape)
             if full_voxel:
                 GTi = (GTi>=1).astype(np.float32)
+            else:
+                GTi = (GTi>0.5).astype(np.float32)
         masks.append(GTi)
     # TODO write code to adjust for overlapping masks
     # Adjust masks if not scaled
@@ -78,7 +80,7 @@ def get_activities_pct(activities, concentrations):
     activities_pct = activities/concentrations[:,np.newaxis] * 100
     return activities_pct
 
-class SaveDataDiscrete(CallBack):
+class SaveDataDiscrete(Callback):
     def __init__(self, calibration_factor, device = None, n_subset_save=0):
         self.device = pytomography.device if device is None else device
         self.calibration_factor = calibration_factor
@@ -88,7 +90,7 @@ class SaveDataDiscrete(CallBack):
         activities_cal = activities[0] *self.calibration_factor
         self.activities.append(activities_cal.cpu().numpy())
             
-class SaveData(CallBack):
+class SaveData(Callback):
     def __init__(self, calibration_factor, masks, device = None, n_subset_save=0):
         self.device = pytomography.device if device is None else device
         self.masks = masks.to(self.device)
@@ -117,7 +119,7 @@ class SaveData(CallBack):
         # Only for voxels 100% in the organ
         self.append_activities(object, self.masks_organonly, self.norm_constant_organonly, self.activities_organonly, self.activities_noise_organonly)
             
-class SaveDataMaskCutoff(CallBack):
+class SaveDataMaskCutoff(Callback):
     def __init__(self, calibration_factor, masks, device = None, n_subset_save=0):
         self.device = pytomography.device if device is None else device
         self.masks = masks.to(self.device)
@@ -132,7 +134,7 @@ class SaveDataMaskCutoff(CallBack):
         activities_cal = activities[0] *self.calibration_factor
         self.activities.append(activities_cal.cpu().numpy())
             
-class SaveDataScaleUp(CallBack):
+class SaveDataScaleUp(Callback):
     def __init__(self, calibration_factor, masks, device = None, n_subset_save=0):
         self.device = pytomography.device if device is None else device
         self.masks = masks.to(self.device)
