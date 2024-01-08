@@ -1,3 +1,4 @@
 [submodule "PyTomographyDIPExample"]
 	path = PyTomographyDIPExample
 	url = https://github.com/lukepolson/PyTomographyDIPExample.git
+	branch = main
