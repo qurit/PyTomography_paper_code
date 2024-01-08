@@ -80,6 +80,7 @@ def reconstruct_phantom(organ_specifications_path, organ_concentrations_path, or
         projections = photopeak,
         system_matrix = system_matrix,
         scatter=scatter,
+        **algorithm_kwargs
         )
     
     callback  = SaveData(calibration_factor, n_subset_save=7, masks=masks)
